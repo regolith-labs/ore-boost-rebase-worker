@@ -147,7 +147,7 @@ fn helius_cluster() -> Result<Cluster> {
 }
 
 fn keypair() -> Result<Keypair> {
-    let keypair_path = std::env!("KEYPAIR");
+    let keypair_path = std::env!("KEYPAIR_PATH");
     let keypair =
         Keypair::read_from_file(keypair_path).map_err(|err| anyhow::anyhow!(err.to_string()))?;
     Ok(keypair)
