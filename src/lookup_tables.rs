@@ -21,7 +21,6 @@ pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
     log::info!("// resolving previous lookup tables");
     let prior = read_file(boost);
     if let Ok(luts) = prior {
-        log::info!("found prior lookup tables");
         for chunk in luts.chunks(MAX_ACCOUNTS_PER_TX_EXTEND) {
             let sig = close(client, chunk).await;
             match sig {
@@ -35,8 +34,8 @@ pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
             }
         }
         clear_file(boost)?;
-        log::info!("resolved prior lookup tables");
     }
+    log::info!("resolved prior lookup tables");
     Ok(())
 }
 
@@ -45,6 +44,7 @@ pub async fn open_new(
     boost: &Pubkey,
     stake_accounts: &[Pubkey],
 ) -> Result<Vec<Lut>> {
+    log::info!("{:?} -- opening new lookup tables", boost);
     let mut lookup_tables = vec![];
     // create new lookup table for each chunk of stake accounts
     for chunk in stake_accounts.chunks(MAX_ACCOUNTS_PER_TX_EXTEND) {
@@ -61,13 +61,14 @@ pub async fn open_new(
         );
         // submit and confirm transaction
         let sig = client.send_transaction(&[create_ix, extend_ix]).await?;
-        log::info!("new lookup table signature: {:?}", sig);
-        // push lookup tables
+        log::info!("{:?} -- new lookup table signature: {:?}", boost, sig);
+        // write lookup table addresses to file
+        // to be closed before next checkpoint
+        write_file(&[lut_pda], boost)?;
+        // push to lookup tables
         lookup_tables.push(lut_pda);
     }
-    // write lookup table addresses to file
-    // to be closed before next checkpoint
-    write_file(lookup_tables.as_slice(), boost)?;
+    log::info!("{:?} -- new lookup tables opened", boost);
     Ok(lookup_tables)
 }
 
@@ -86,12 +87,15 @@ async fn close(client: &Client, luts: &[Lut]) -> Result<Signature> {
 }
 
 fn clear_file(boost: &Pubkey) -> Result<()> {
+    log::info!("{:?} -- clearing prior lookup tables", boost);
     let path = format!("{}/{}", LUTS_PATH, boost);
     let _file = File::create(path)?; // create by default truncates if already exists
+    log::info!("{:?} -- prior lookup tables cleared", boost);
     Ok(())
 }
 
 fn write_file(luts: &[Lut], boost: &Pubkey) -> Result<()> {
+    log::info!("{:?} -- writing new lookup tables", boost);
     let path = format!("{}/{}", LUTS_PATH, boost);
     let mut file = OpenOptions::new()
         .create(true) // open or create
@@ -101,24 +105,28 @@ fn write_file(luts: &[Lut], boost: &Pubkey) -> Result<()> {
         file.write_all(lut.to_bytes().as_slice())?;
         file.write_all(b"\n")?;
     }
+    log::info!("{:?} -- new lookup tables written", boost);
     Ok(())
 }
 
 type Lut = Pubkey;
 fn read_file(boost: &Pubkey) -> Result<Vec<Lut>> {
-    let mut vec = vec![];
-    let mut line = vec![];
+    log::info!("{:?} -- reading prior lookup tables", boost);
     let path = format!("{}/{}", LUTS_PATH, boost);
     let file = File::open(path)?;
+    log::info!("{:?} -- found prior lookup tables file", boost);
+    let mut luts = vec![];
+    let mut line = vec![];
     let mut reader = BufReader::new(file);
     while reader.read_until(b'\n', &mut line)? > 0 {
         let bytes = line.clone();
         let arr: [u8; 32] = bytes.try_into().map_err(|_| InvalidPubkeyBytes)?;
         let pubkey = Pubkey::new_from_array(arr);
-        vec.push(pubkey);
+        luts.push(pubkey);
         line.clear();
     }
-    Ok(vec)
+    log::info!("{:?} -- parsed prior lookup tables", boost);
+    Ok(luts)
 }
 
 const LUTS_PATH: &str = { std::env!("LUTS_PATH") };
