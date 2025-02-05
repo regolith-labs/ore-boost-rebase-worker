@@ -21,7 +21,7 @@ pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
     log::info!("// resolving previous lookup tables");
     let prior = read_file(boost);
     if let Ok(luts) = prior {
-        for chunk in luts.chunks(MAX_ACCOUNTS_PER_TX_EXTEND) {
+        for chunk in luts.chunks(MAX_ACCOUNTS_PER_TX_CLOSE) {
             let sig = close(client, chunk).await;
             match sig {
                 Ok(sig) => {
@@ -60,7 +60,9 @@ pub async fn open_new(
             chunk.to_vec(),
         );
         // submit and confirm transaction
-        let sig = client.send_transaction(&[create_ix, extend_ix]).await?;
+        let sig = client
+            .send_transaction(&[create_ix, extend_ix], COMPUTE_BUDGET_EXTEND)
+            .await?;
         log::info!("{:?} -- new lookup table signature: {:?}", boost, sig);
         // write lookup table addresses to file
         // to be closed before next checkpoint
@@ -82,7 +84,9 @@ async fn close(client: &Client, luts: &[Lut]) -> Result<Signature> {
         );
         ixs.push(ix);
     }
-    let sig = client.send_transaction(ixs.as_slice()).await?;
+    let sig = client
+        .send_transaction(ixs.as_slice(), COMPUTE_BUDGET_CLOSE)
+        .await?;
     Ok(sig)
 }
 
@@ -129,4 +133,4 @@ fn read_file(boost: &Pubkey) -> Result<Vec<Lut>> {
     Ok(luts)
 }
 
-const LUTS_PATH: &str = { std::env!("LUTS_PATH") };
+const LUTS_PATH: &str = std::env!("LUTS_PATH");

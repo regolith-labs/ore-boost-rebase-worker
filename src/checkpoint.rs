@@ -9,7 +9,8 @@ use crate::error::Error::ClockStillTicking;
 use crate::lookup_tables;
 
 const MAX_ACCOUNTS_PER_TX: usize = 10;
-const COMPUTE_BUDGET: u32 = 100_000;
+const COMPUTE_BUDGET_REBASE: u32 = 20_000;
+const COMPUTE_BUDGET_REBASE_MANY: u32 = COMPUTE_BUDGET_REBASE * (MAX_ACCOUNTS_PER_TX as u32);
 
 pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
     // derive address
@@ -187,7 +188,9 @@ async fn rebase_all(
             "{:?} -- remaining accounts is empty -- but checkpoint is still elpased. resetting.",
             boost
         );
-        let sig = client.send_transaction(ixs.as_slice()).await?;
+        let sig = client
+            .send_transaction(ixs.as_slice(), COMPUTE_BUDGET_REBASE)
+            .await?;
         log::info!("{:?} -- reset signature: {:?}", boost, sig);
     } else {
         // chunk stake accounts into batches
@@ -200,7 +203,9 @@ async fn rebase_all(
             }
             if !ixs.is_empty() {
                 log::info!("{:?} -- submitting chunk", boost);
-                let sig = client.send_transaction(ixs.as_slice()).await?;
+                let sig = client
+                    .send_transaction(ixs.as_slice(), COMPUTE_BUDGET_REBASE_MANY)
+                    .await?;
                 log::info!("{:?} -- chunk signature: {:?}", boost, sig);
             } else {
                 log::info!("{:?} -- checkpoint complete", boost);

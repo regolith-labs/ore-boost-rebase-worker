@@ -33,9 +33,12 @@ impl Client {
         };
         Ok(client)
     }
-    pub async fn send_transaction(&self, ixs: &[Instruction]) -> Result<Signature> {
+    pub async fn send_transaction(&self, ixs: &[Instruction], cu_limit: u32) -> Result<Signature> {
         let signer = Arc::clone(&self.keypair);
         let signers: Vec<Arc<dyn Signer>> = vec![signer];
+        let compute_budget_ix =
+            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu_limit);
+        let ixs = [&[compute_budget_ix], ixs].concat();
         let tx = SmartTransactionConfig::new(ixs.to_vec(), signers, Timeout::default());
         let sig = self.rpc.send_smart_transaction(tx).await?;
         Ok(sig)
