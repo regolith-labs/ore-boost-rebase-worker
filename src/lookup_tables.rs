@@ -13,8 +13,6 @@ use crate::{
 
 const MAX_ACCOUNTS_PER_TX_EXTEND: usize = 256;
 const MAX_ACCOUNTS_PER_TX_CLOSE: usize = 10;
-const COMPUTE_BUDGET_EXTEND: u32 = 100_000;
-const COMPUTE_BUDGET_CLOSE: u32 = 100_000;
 
 pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
     log::info!("///////////////////////////////////////////////////////////");
@@ -60,9 +58,7 @@ pub async fn open_new(
             chunk.to_vec(),
         );
         // submit and confirm transaction
-        let sig = client
-            .send_transaction(&[create_ix, extend_ix], COMPUTE_BUDGET_EXTEND)
-            .await?;
+        let sig = client.send_transaction(&[create_ix, extend_ix]).await?;
         log::info!("{:?} -- new lookup table signature: {:?}", boost, sig);
         // write lookup table addresses to file
         // to be closed before next checkpoint
@@ -84,9 +80,7 @@ async fn close(client: &Client, luts: &[Lut]) -> Result<Signature> {
         );
         ixs.push(ix);
     }
-    let sig = client
-        .send_transaction(ixs.as_slice(), COMPUTE_BUDGET_CLOSE)
-        .await?;
+    let sig = client.send_transaction(ixs.as_slice()).await?;
     Ok(sig)
 }
 
