@@ -57,8 +57,11 @@ pub async fn open_new(
             address_lookup_table::instruction::create_lookup_table(signer, signer, clock.slot);
         let sig = client.send_transaction(&[create_ix]).await?;
         log::info!("{:?} -- new lookup table signature: {:?}", boost, sig);
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        // write lookup table addresses to file
+        // to be closed before next checkpoint
+        write_file(&[lut_pda], boost)?;
         // then bundle the extend instructions as jito bundles
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
         let mut instructions: Vec<Vec<Instruction>> = Vec::with_capacity(5);
         for sub in chunk.chunks(26) {
             let extend_ix = address_lookup_table::instruction::extend_lookup_table(
@@ -67,30 +70,27 @@ pub async fn open_new(
                 Some(signer),
                 sub.to_vec(),
             );
-            // instructions.push(vec![extend_ix]);
-            // if instructions.len().eq(&5) {
-            //     let compiled: Vec<&[Instruction]> =
-            //         instructions.iter().map(|vec| vec.as_slice()).collect();
-            //     log::info!("{:?} -- sending extend instructions as bundle", boost);
-            //     client.send_jito_bundle(compiled.as_slice()).await?;
-            //     instructions.clear();
-            // }
-            log::info!("{:?} -- sending extend instructions", boost);
-            let sig = client.send_transaction(&[extend_ix]).await?;
-            log::info!("{:?} -- lookup table extend signature: {:?}", boost, sig);
-            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            instructions.push(vec![extend_ix]);
+            if instructions.len().eq(&5) {
+                let compiled: Vec<&[Instruction]> =
+                    instructions.iter().map(|vec| vec.as_slice()).collect();
+                log::info!("{:?} -- sending extend instructions as bundle", boost);
+                client.send_jito_bundle(compiled.as_slice()).await?;
+                instructions.clear();
+            }
+            // log::info!("{:?} -- sending extend instructions", boost);
+            // let sig = client.send_transaction(&[extend_ix]).await?;
+            // log::info!("{:?} -- lookup table extend signature: {:?}", boost, sig);
+            // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
         }
-        // // submit last jito bundle
-        // if !instructions.is_empty() {
-        //     log::info!("{:?} -- found left over extend instructions", boost);
-        //     let compiled: Vec<&[Instruction]> =
-        //         instructions.iter().map(|vec| vec.as_slice()).collect();
-        //     log::info!("{:?} -- sending extend instructions as bundle", boost);
-        //     client.send_jito_bundle(compiled.as_slice()).await?;
-        // }
-        // write lookup table addresses to file
-        // to be closed before next checkpoint
-        write_file(&[lut_pda], boost)?;
+        // submit last jito bundle
+        if !instructions.is_empty() {
+            log::info!("{:?} -- found left over extend instructions", boost);
+            let compiled: Vec<&[Instruction]> =
+                instructions.iter().map(|vec| vec.as_slice()).collect();
+            log::info!("{:?} -- sending extend instructions as bundle", boost);
+            client.send_jito_bundle(compiled.as_slice()).await?;
+        }
         // push to lookup tables
         lookup_tables.push(lut_pda);
     }
