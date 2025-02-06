@@ -14,7 +14,7 @@ use crate::{
     error::Error::InvalidPubkeyBytes,
 };
 
-const MAX_ACCOUNTS_PER_TX_EXTEND: usize = 256;
+const MAX_ACCOUNTS_PER_LUT: usize = 256;
 const MAX_ACCOUNTS_PER_TX_CLOSE: usize = 10;
 
 pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
@@ -49,7 +49,7 @@ pub async fn open_new(
     log::info!("{:?} -- opening new lookup tables", boost);
     let mut lookup_tables = vec![];
     // create new lookup table for each chunk of stake accounts
-    for chunk in stake_accounts.chunks(MAX_ACCOUNTS_PER_TX_EXTEND) {
+    for chunk in stake_accounts.chunks(MAX_ACCOUNTS_PER_LUT) {
         let clock = client.rpc.get_clock().await?;
         let signer = client.keypair.pubkey();
         // build and submit create instruction first
@@ -58,10 +58,9 @@ pub async fn open_new(
         let sig = client.send_transaction(&[create_ix]).await?;
         log::info!("{:?} -- new lookup table signature: {:?}", boost, sig);
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        // then bundle all 256 accounts, to be inserted into the lookup table
-        // as five transactions submitted as a jito bundle
-        let mut instructions: Vec<Vec<Instruction>> = vec![];
-        for sub in chunk.chunks(52) {
+        // then bundle the extend instructions as jito bundles
+        let mut instructions: Vec<Vec<Instruction>> = Vec::with_capacity(5);
+        for sub in chunk.chunks(26) {
             let extend_ix = address_lookup_table::instruction::extend_lookup_table(
                 lut_pda,
                 signer,
@@ -69,11 +68,22 @@ pub async fn open_new(
                 sub.to_vec(),
             );
             instructions.push(vec![extend_ix]);
+            if instructions.len().eq(&5) {
+                let compiled: Vec<&[Instruction]> =
+                    instructions.iter().map(|vec| vec.as_slice()).collect();
+                log::info!("{:?} -- sending extend instructions as bundle", boost);
+                client.send_jito_bundle(compiled.as_slice()).await?;
+                instructions.clear();
+            }
         }
-        let instructions: Vec<&[Instruction]> =
-            instructions.iter().map(|vec| vec.as_slice()).collect();
-        log::info!("{:?} -- sending extend instructions as bundle", boost);
-        client.send_jito_bundle(instructions.as_slice()).await?;
+        // submit last jito bundle
+        if !instructions.is_empty() {
+            log::info!("{:?} -- found left over extend instructions", boost);
+            let compiled: Vec<&[Instruction]> =
+                instructions.iter().map(|vec| vec.as_slice()).collect();
+            log::info!("{:?} -- sending extend instructions as bundle", boost);
+            client.send_jito_bundle(compiled.as_slice()).await?;
+        }
         // write lookup table addresses to file
         // to be closed before next checkpoint
         write_file(&[lut_pda], boost)?;

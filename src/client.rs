@@ -44,7 +44,7 @@ impl Client {
     }
     /// returns ok if confirmed
     pub async fn send_jito_bundle(&self, ixs: &[&[Instruction]]) -> Result<()> {
-        let jito_api_url = "https://mainnet.block-engine.jito.wtf";
+        let jito_api_url = "https://mainnet.block-engine.jito.wtf/api/v1/bundles";
         let mut transactions = vec![];
         for slice in ixs {
             let tx = self.create_jito_transaction(slice).await?;
@@ -54,15 +54,16 @@ impl Client {
             .rpc
             .send_jito_bundle(transactions, jito_api_url)
             .await?;
+        log::info!("bundle id: {:?}", bundle_id);
         self.confirm_jito_bundle(bundle_id.as_str()).await?;
         Ok(())
     }
     async fn confirm_jito_bundle(&self, bundle_id: &str) -> Result<()> {
         let mut retries = 0;
-        let max_retires = 5;
+        let max_retires = 15;
         loop {
             match self
-                .request_confirm_jito_bundle(bundle_id.to_string())
+                .request_confirm_jito_bundle_inflight(bundle_id.to_string())
                 .await
             {
                 Ok(()) => {
@@ -74,8 +75,69 @@ impl Client {
                     if retries == max_retires {
                         return Err(UnconfirmedJitoBundle).map_err(From::from);
                     }
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
+            }
+        }
+    }
+    async fn request_confirm_jito_bundle_inflight(&self, bundle_id: String) -> Result<()> {
+        let jito_api_url = "https://mainnet.block-engine.jito.wtf/api/v1/getInflightBundleStatuses";
+        let parsed_url = url::Url::parse(jito_api_url)?;
+        #[derive(serde::Serialize, Debug)]
+        pub struct BasicRequest {
+            pub jsonrpc: String,
+            pub id: u32,
+            pub method: String,
+            pub params: Vec<Vec<String>>,
+        }
+        let request: BasicRequest = BasicRequest {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            method: "getInflightBundleStatuses".to_string(),
+            params: vec![vec![bundle_id.to_string()]],
+        };
+        let response: serde_json::Value = self
+            .rpc
+            .client
+            .post(parsed_url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!(err))?
+            .json::<serde_json::Value>()
+            .await?;
+        if let Some(error) = response.clone().get("error") {
+            return Err(anyhow::anyhow!(error.to_string())).map_err(From::from);
+        }
+        #[derive(serde::Deserialize, Debug)]
+        struct Inner {
+            bundle_id: String,
+            status: String,
+        }
+        #[derive(serde::Deserialize, Debug)]
+        struct Middle {
+            value: Vec<Inner>,
+        }
+        #[derive(serde::Deserialize, Debug)]
+        struct Outer {
+            result: Middle,
+        }
+        let response = serde_json::from_value(response)?;
+        log::info!("jito response: {:?}", response);
+        let response: Outer = serde_json::from_value(response)?;
+        let first = response
+            .result
+            .value
+            .first()
+            .ok_or(anyhow::anyhow!("missing value"))?;
+        match first.status.as_str() {
+            "Landed" => {
+                log::info!("jito confirmation: {:?}", response);
+                Ok(())
+            }
+            status => {
+                log::info!("bundle status: {}", status);
+                Err(anyhow::anyhow!("not confirmed"))
             }
         }
     }
@@ -93,11 +155,12 @@ impl Client {
         struct Outer {
             result: Middle,
         }
-        let jito_api_url = "https://mainnet.block-engine.jito.wtf";
+        let jito_api_url = "https://mainnet.block-engine.jito.wtf/api/v1/getBundleStatuses";
         let response = self
             .rpc
             .get_bundle_statuses(vec![bundle_id], jito_api_url)
             .await?;
+        log::info!("jito response: {:?}", response);
         let response: Outer = serde_json::from_value(response)?;
         log::info!("jito confirmation: {:?}", response);
         Ok(())
@@ -109,7 +172,7 @@ impl Client {
         let config = CreateSmartTransactionConfig::new(ixs.to_vec(), signers);
         let (tx, _) = self
             .rpc
-            .create_smart_transaction_with_tip(config, None)
+            .create_smart_transaction_with_tip(config, Some(100_000))
             .await?;
         Ok(tx)
     }
