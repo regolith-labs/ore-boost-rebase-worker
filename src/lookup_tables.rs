@@ -114,7 +114,7 @@ async fn close(client: &Client, luts: &[Lut]) -> Result<Signature> {
 
 fn clear_file(boost: &Pubkey) -> Result<()> {
     log::info!("{:?} -- clearing prior lookup tables", boost);
-    let path = format!("{}/{}", LUTS_PATH, boost);
+    let path = format!("{}-{}", LUTS_PATH, boost);
     let _file = File::create(path)?; // create by default truncates if already exists
     log::info!("{:?} -- prior lookup tables cleared", boost);
     Ok(())
@@ -122,7 +122,8 @@ fn clear_file(boost: &Pubkey) -> Result<()> {
 
 fn write_file(luts: &[Lut], boost: &Pubkey) -> Result<()> {
     log::info!("{:?} -- writing new lookup tables", boost);
-    let path = format!("{}/{}", LUTS_PATH, boost);
+    let path = format!("{}-{}", LUTS_PATH, boost);
+    log::info!("path: {}", path);
     let mut file = OpenOptions::new()
         .create(true) // open or create
         .append(true) // append
@@ -138,17 +139,23 @@ fn write_file(luts: &[Lut], boost: &Pubkey) -> Result<()> {
 type Lut = Pubkey;
 fn read_file(boost: &Pubkey) -> Result<Vec<Lut>> {
     log::info!("{:?} -- reading prior lookup tables", boost);
-    let path = format!("{}/{}", LUTS_PATH, boost);
+    let path = format!("{}-{}", LUTS_PATH, boost);
     let file = File::open(path)?;
     log::info!("{:?} -- found prior lookup tables file", boost);
     let mut luts = vec![];
     let mut line = vec![];
     let mut reader = BufReader::new(file);
+    // read lines
     while reader.read_until(b'\n', &mut line)? > 0 {
+        // pop new line char
+        line.pop();
+        // decode
         let bytes = line.clone();
         let arr: [u8; 32] = bytes.try_into().map_err(|_| InvalidPubkeyBytes)?;
         let pubkey = Pubkey::new_from_array(arr);
+        // add pubkey to list
         luts.push(pubkey);
+        // clear and read next line
         line.clear();
     }
     log::info!("{:?} -- parsed prior lookup tables", boost);
