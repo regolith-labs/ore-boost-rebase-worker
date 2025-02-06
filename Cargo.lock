@@ -2636,7 +2636,7 @@ dependencies = [
 [[package]]
 name = "ore-api"
 version = "3.0.0"
-source = "git+https://github.com/regolith-labs/ore?branch=rebase-worker#25aabc578b98ee59c45251d871b2f264b047dc7b"
+source = "git+https://github.com/regolith-labs/ore?branch=rebase-worker#1ac1d1e7919213590989efc032af2d8923d705e3"
 dependencies = [
  "array-const-fn-init",
  "bytemuck",
@@ -2655,7 +2655,7 @@ dependencies = [
 [[package]]
 name = "ore-boost-api"
 version = "1.2.0"
-source = "git+https://github.com/regolith-labs/ore-boost?branch=rebase-worker#fd4a7ab0a967b2768ae6a7c9c4bc4f168d92067c"
+source = "git+https://github.com/regolith-labs/ore-boost?branch=rebase-worker#d3c0a2cbe156b9407a1b36a19652fd870e661d84"
 dependencies = [
  "array-const-fn-init",
  "bytemuck",

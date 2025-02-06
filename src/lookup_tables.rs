@@ -37,6 +37,7 @@ pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
     Ok(())
 }
 
+// TODO: tx too large
 pub async fn open_new(
     client: &Client,
     boost: &Pubkey,

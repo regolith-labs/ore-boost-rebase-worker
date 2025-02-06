@@ -109,17 +109,18 @@ where
     ))];
     all_filters.extend(filters);
     let result = client
-        .get_program_accounts_with_config(
-            program_id,
-            RpcProgramAccountsConfig {
-                filters: Some(all_filters),
-                account_config: RpcAccountInfoConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
+        //.get_program_accounts_with_config(
+        //    program_id,
+        //    RpcProgramAccountsConfig {
+        //        filters: Some(all_filters),
+        //        account_config: RpcAccountInfoConfig {
+        //            encoding: Some(UiAccountEncoding::Base64),
+        //            ..Default::default()
+        //        },
+        //        ..Default::default()
+        //    },
+        //)
+        .get_program_accounts(program_id)
         .await?;
     let accounts = result
         .into_iter()
