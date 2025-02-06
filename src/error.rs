@@ -8,4 +8,6 @@ pub enum Error {
     InvalidPubkeyBytes,
     #[error("clock still ticking")]
     ClockStillTicking,
+    #[error("unconfirmed jito bundle")]
+    UnconfirmedJitoBundle,
 }

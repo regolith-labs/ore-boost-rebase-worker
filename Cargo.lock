@@ -2655,7 +2655,7 @@ dependencies = [
 [[package]]
 name = "ore-boost-api"
 version = "1.2.0"
-source = "git+https://github.com/regolith-labs/ore-boost?branch=rebase-worker#d3c0a2cbe156b9407a1b36a19652fd870e661d84"
+source = "git+https://github.com/regolith-labs/ore-boost?rev=d3c0a2c#d3c0a2cbe156b9407a1b36a19652fd870e661d84"
 dependencies = [
  "array-const-fn-init",
  "bytemuck",
@@ -2681,6 +2681,8 @@ dependencies = [
  "helius",
  "log",
  "ore-boost-api",
+ "serde",
+ "serde_json",
  "solana-account-decoder",
  "solana-client",
  "solana-sdk",

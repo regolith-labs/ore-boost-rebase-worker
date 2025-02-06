@@ -4,7 +4,10 @@ use std::{
 };
 
 use anyhow::Result;
-use solana_sdk::{address_lookup_table, pubkey::Pubkey, signature::Signature, signer::Signer};
+use solana_sdk::{
+    address_lookup_table, instruction::Instruction, pubkey::Pubkey, signature::Signature,
+    signer::Signer,
+};
 
 use crate::{
     client::{AsyncClient, Client},
@@ -49,18 +52,28 @@ pub async fn open_new(
     for chunk in stake_accounts.chunks(MAX_ACCOUNTS_PER_TX_EXTEND) {
         let clock = client.rpc.get_clock().await?;
         let signer = client.keypair.pubkey();
-        // build create and extend instructions
+        // build and submit create instruction first
         let (create_ix, lut_pda) =
             address_lookup_table::instruction::create_lookup_table(signer, signer, clock.slot);
-        let extend_ix = address_lookup_table::instruction::extend_lookup_table(
-            lut_pda,
-            signer,
-            Some(signer),
-            chunk.to_vec(),
-        );
-        // submit and confirm transaction
-        let sig = client.send_transaction(&[create_ix, extend_ix]).await?;
+        let sig = client.send_transaction(&[create_ix]).await?;
         log::info!("{:?} -- new lookup table signature: {:?}", boost, sig);
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        // then bundle all 256 accounts, to be inserted into the lookup table
+        // as five transactions submitted as a jito bundle
+        let mut instructions: Vec<Vec<Instruction>> = vec![];
+        for sub in chunk.chunks(52) {
+            let extend_ix = address_lookup_table::instruction::extend_lookup_table(
+                lut_pda,
+                signer,
+                Some(signer),
+                sub.to_vec(),
+            );
+            instructions.push(vec![extend_ix]);
+        }
+        let instructions: Vec<&[Instruction]> =
+            instructions.iter().map(|vec| vec.as_slice()).collect();
+        log::info!("{:?} -- sending extend instructions as bundle", boost);
+        client.send_jito_bundle(instructions.as_slice()).await?;
         // write lookup table addresses to file
         // to be closed before next checkpoint
         write_file(&[lut_pda], boost)?;

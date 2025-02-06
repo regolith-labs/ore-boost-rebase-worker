@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use helius::types::{Cluster, SmartTransactionConfig, Timeout};
+use helius::types::{Cluster, CreateSmartTransactionConfig, SmartTransactionConfig, Timeout};
 use ore_boost_api::state::{Boost, Checkpoint, Stake};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -14,7 +14,9 @@ use solana_sdk::signer::Signer;
 use solana_sdk::{signature::Keypair, signer::EncodableKey};
 use steel::{sysvar, AccountDeserialize, Clock, Discriminator, Instruction};
 
-use crate::error::Error::{InvalidHeliusCluster, MissingHeliusSolanaAsyncClient};
+use crate::error::Error::{
+    InvalidHeliusCluster, MissingHeliusSolanaAsyncClient, UnconfirmedJitoBundle,
+};
 
 pub struct Client {
     pub rpc: helius::Helius,
@@ -39,6 +41,77 @@ impl Client {
         let tx = SmartTransactionConfig::new(ixs.to_vec(), signers, Timeout::default());
         let sig = self.rpc.send_smart_transaction(tx).await?;
         Ok(sig)
+    }
+    /// returns ok if confirmed
+    pub async fn send_jito_bundle(&self, ixs: &[&[Instruction]]) -> Result<()> {
+        let jito_api_url = "https://mainnet.block-engine.jito.wtf";
+        let mut transactions = vec![];
+        for slice in ixs {
+            let tx = self.create_jito_transaction(slice).await?;
+            transactions.push(tx);
+        }
+        let bundle_id = self
+            .rpc
+            .send_jito_bundle(transactions, jito_api_url)
+            .await?;
+        self.confirm_jito_bundle(bundle_id.as_str()).await?;
+        Ok(())
+    }
+    async fn confirm_jito_bundle(&self, bundle_id: &str) -> Result<()> {
+        let mut retries = 0;
+        let max_retires = 5;
+        loop {
+            match self
+                .request_confirm_jito_bundle(bundle_id.to_string())
+                .await
+            {
+                Ok(()) => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    log::error!("{:?}", err);
+                    retries += 1;
+                    if retries == max_retires {
+                        return Err(UnconfirmedJitoBundle).map_err(From::from);
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+    async fn request_confirm_jito_bundle(&self, bundle_id: String) -> Result<()> {
+        #[derive(serde::Deserialize, Debug)]
+        struct Inner {
+            bundle_id: String,
+            transactions: Vec<String>,
+        }
+        #[derive(serde::Deserialize, Debug)]
+        struct Middle {
+            value: Vec<Inner>,
+        }
+        #[derive(serde::Deserialize, Debug)]
+        struct Outer {
+            result: Middle,
+        }
+        let jito_api_url = "https://mainnet.block-engine.jito.wtf";
+        let response = self
+            .rpc
+            .get_bundle_statuses(vec![bundle_id], jito_api_url)
+            .await?;
+        let response: Outer = serde_json::from_value(response)?;
+        log::info!("jito confirmation: {:?}", response);
+        Ok(())
+    }
+    /// returns base58 encoded transaction string
+    async fn create_jito_transaction(&self, ixs: &[Instruction]) -> Result<String> {
+        let signer = Arc::clone(&self.keypair);
+        let signers: Vec<Arc<dyn Signer>> = vec![signer];
+        let config = CreateSmartTransactionConfig::new(ixs.to_vec(), signers);
+        let (tx, _) = self
+            .rpc
+            .create_smart_transaction_with_tip(config, None)
+            .await?;
+        Ok(tx)
     }
 }
 
@@ -69,13 +142,17 @@ impl AsyncClient for helius::Helius {
         Ok(*boost)
     }
     async fn get_boost_stake_accounts(&self, boost: &Pubkey) -> Result<Vec<(Pubkey, Stake)>> {
-        let filter = RpcFilterType::Memcmp(Memcmp::new_raw_bytes(56, boost.to_bytes().to_vec()));
-        get_program_accounts::<Stake>(
+        let accounts = get_program_accounts::<Stake>(
             self.get_async_client()?.as_ref(),
             &ore_boost_api::ID,
-            vec![filter],
+            vec![],
         )
-        .await
+        .await?;
+        let accounts = accounts
+            .into_iter()
+            .filter(|(_, stake)| stake.boost.eq(boost))
+            .collect();
+        Ok(accounts)
     }
     async fn get_checkpoint(&self, checkpoint: &Pubkey) -> Result<Checkpoint> {
         let data = self
@@ -109,18 +186,18 @@ where
     ))];
     all_filters.extend(filters);
     let result = client
-        //.get_program_accounts_with_config(
-        //    program_id,
-        //    RpcProgramAccountsConfig {
-        //        filters: Some(all_filters),
-        //        account_config: RpcAccountInfoConfig {
-        //            encoding: Some(UiAccountEncoding::Base64),
-        //            ..Default::default()
-        //        },
-        //        ..Default::default()
-        //    },
-        //)
-        .get_program_accounts(program_id)
+        .get_program_accounts_with_config(
+            program_id,
+            RpcProgramAccountsConfig {
+                // filters: Some(all_filters),
+                filters: None,
+                account_config: RpcAccountInfoConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
         .await?;
     let accounts = result
         .into_iter()
