@@ -2,24 +2,23 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use helius::types::{Cluster, CreateSmartTransactionConfig, SmartTransactionConfig, Timeout};
+use helius::types::{
+    Cluster, CreateSmartTransactionConfig, SmartTransaction, SmartTransactionConfig, Timeout,
+};
 use ore_boost_api::state::{Boost, Checkpoint, Stake};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{
-    RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig,
-};
+use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::signer::Signer;
-use solana_sdk::transaction::Transaction;
 use solana_sdk::{signature::Keypair, signer::EncodableKey};
 use steel::{sysvar, AccountDeserialize, Clock, Discriminator, Instruction};
 
 use crate::error::Error::{
-    InvalidHeliusCluster, MissingHeliusSolanaAsyncClient, UnconfirmedJitoBundle,
+    EmptyJitoBundle, InvalidHeliusCluster, MissingHeliusSolanaAsyncClient,
+    TooManyTransactionsInJitoBundle, UnconfirmedJitoBundle,
 };
 
 pub struct Client {
@@ -39,37 +38,48 @@ impl Client {
         };
         Ok(client)
     }
-    pub async fn send_transaction(&self, ixs: &[Instruction]) -> Result<Signature> {
-        let rpc = self.rpc.get_async_client()?;
-        let (hash, _) = rpc
-            .get_latest_blockhash_with_commitment(CommitmentConfig::finalized())
-            .await?;
-        let mut tx = Transaction::new_with_payer(ixs, Some(&self.keypair.pubkey()));
-        tx.sign(&[self.keypair.as_ref()], hash);
-        let sig = rpc
-            .send_transaction_with_config(
-                &tx,
-                RpcSendTransactionConfig {
-                    skip_preflight: true,
-                    ..Default::default()
-                },
-            )
-            .await?;
-        Ok(sig)
-    }
     // pub async fn send_transaction(&self, ixs: &[Instruction]) -> Result<Signature> {
-    //     let signer = Arc::clone(&self.keypair);
-    //     let signers: Vec<Arc<dyn Signer>> = vec![signer];
-    //     let tx = SmartTransactionConfig::new(ixs.to_vec(), signers, Timeout::default());
-    //     let sig = self.rpc.send_smart_transaction(tx).await?;
+    //     let rpc = self.rpc.get_async_client()?;
+    //     let (hash, _) = rpc
+    //         .get_latest_blockhash_with_commitment(CommitmentConfig::finalized())
+    //         .await?;
+    //     let mut tx = Transaction::new_with_payer(ixs, Some(&self.keypair.pubkey()));
+    //     tx.sign(&[self.keypair.as_ref()], hash);
+    //     let sig = rpc
+    //         .send_transaction_with_config(
+    //             &tx,
+    //             RpcSendTransactionConfig {
+    //                 skip_preflight: true,
+    //                 ..Default::default()
+    //             },
+    //         )
+    //         .await?;
     //     Ok(sig)
     // }
+    pub async fn send_transaction(&self, ixs: &[Instruction]) -> Result<Signature> {
+        let signer = Arc::clone(&self.keypair);
+        let signers: Vec<Arc<dyn Signer>> = vec![signer];
+        let tx = SmartTransactionConfig::new(ixs.to_vec(), signers, Timeout::default());
+        let sig = self.rpc.send_smart_transaction(tx).await?;
+        Ok(sig)
+    }
     /// returns ok if confirmed
     pub async fn send_jito_bundle(&self, ixs: &[&[Instruction]]) -> Result<()> {
         let jito_api_url = "https://mainnet.block-engine.jito.wtf/api/v1/bundles";
+        if ixs.len().gt(&5) {
+            return Err(anyhow::anyhow!(TooManyTransactionsInJitoBundle));
+        }
+        if ixs.is_empty() {
+            return Err(anyhow::anyhow!(EmptyJitoBundle));
+        }
         let mut transactions = vec![];
-        for slice in ixs {
-            let tx = self.create_jito_transaction(slice).await?;
+        for (index, slice) in ixs.iter().enumerate() {
+            let tx = if index.eq(&(ixs.len() - 1)) {
+                // last of n transactions in bundle, add tip
+                self.create_jito_transaction(slice).await?
+            } else {
+                self.create_transaction(slice).await?
+            };
             transactions.push(tx);
         }
         let bundle_id = self
@@ -197,6 +207,19 @@ impl Client {
             .create_smart_transaction_with_tip(config, Some(100_000))
             .await?;
         Ok(tx)
+    }
+    /// returns base58 encoded transaction string
+    async fn create_transaction(&self, ixs: &[Instruction]) -> Result<String> {
+        let signer = Arc::clone(&self.keypair);
+        let signers: Vec<Arc<dyn Signer>> = vec![signer];
+        let config = CreateSmartTransactionConfig::new(ixs.to_vec(), signers);
+        let (tx, _) = self.rpc.create_smart_transaction(&config).await?;
+        let bytes = match tx {
+            SmartTransaction::Legacy(tx) => bincode::serialize(&tx)?,
+            SmartTransaction::Versioned(tx) => bincode::serialize(&tx)?,
+        };
+        let string = solana_sdk::bs58::encode(bytes).into_string();
+        Ok(string)
     }
 }
 

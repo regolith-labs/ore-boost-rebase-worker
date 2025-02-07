@@ -20,6 +20,8 @@ pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
     // -- cold start --
     // get stake accounts for current checkpoint
     // and create new lookup tables
+    // lookup_tables::close_prior(client, &boost_pda).await?;
+    // Ok(())
     let mut stake_accounts = get_stake_accounts(client, &boost_pda, &checkpoint).await?;
     let mut lookup_tables =
         lookup_tables::open_new(client, &boost_pda, stake_accounts.as_slice()).await?;

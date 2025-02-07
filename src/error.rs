@@ -10,4 +10,8 @@ pub enum Error {
     ClockStillTicking,
     #[error("unconfirmed jito bundle")]
     UnconfirmedJitoBundle,
+    #[error("too many transactions in jito bundle")]
+    TooManyTransactionsInJitoBundle,
+    #[error("empty jito bundle")]
+    EmptyJitoBundle,
 }

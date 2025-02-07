@@ -21,10 +21,27 @@ pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
     log::info!("///////////////////////////////////////////////////////////");
     log::info!("// resolving previous lookup tables");
     let prior = read_file(boost);
-    if let Ok(luts) = prior {
+    if let Ok(ref luts) = prior {
+        // first, deactivate accounts
         for chunk in luts.chunks(MAX_ACCOUNTS_PER_TX_CLOSE) {
-            let sig = close(client, chunk).await;
-            match sig {
+            // deactivate
+            match deactivate(client, luts).await {
+                Ok(sig) => {
+                    log::info!("chunk deactivate signature: {:?}", sig);
+                }
+                Err(err) => {
+                    log::error!("{:?}", err);
+                    log::error!("chunk failed to deactivate: {:?}", chunk);
+                }
+            }
+        }
+        // then sleep for 5 minutes
+        // to allow 500 blocks to pass
+        tokio::time::sleep(tokio::time::Duration::from_secs(60 * 5)).await;
+        for chunk in luts.chunks(MAX_ACCOUNTS_PER_TX_CLOSE) {
+            // deactivate
+            // sleep then close
+            match close(client, luts).await {
                 Ok(sig) => {
                     log::info!("chunk closed signature: {:?}", sig);
                 }
@@ -34,7 +51,11 @@ pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
                 }
             }
         }
+        // clear the cache file
         clear_file(boost)?;
+    }
+    if let Err(err) = prior {
+        log::error!("{:?}", err);
     }
     log::info!("resolved prior lookup tables");
     Ok(())
@@ -63,7 +84,7 @@ pub async fn open_new(
         // then bundle the extend instructions as jito bundles
         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
         let mut instructions: Vec<Vec<Instruction>> = Vec::with_capacity(5);
-        for sub in chunk.chunks(2) {
+        for sub in chunk.chunks(26) {
             let extend_ix = address_lookup_table::instruction::extend_lookup_table(
                 lut_pda,
                 signer,
@@ -72,19 +93,15 @@ pub async fn open_new(
             );
             instructions.push(vec![extend_ix]);
             if instructions.len().eq(&5) {
-                // let compiled: Vec<&[Instruction]> =
-                //     instructions.iter().map(|vec| vec.as_slice()).collect();
-                // log::info!("{:?} -- sending extend instructions as bundle", boost);
-                // client.send_jito_bundle(compiled.as_slice()).await?;
-                let compiled: Vec<_> = instructions.clone().into_iter().flatten().collect();
-                let sig = client.send_transaction(compiled.as_slice()).await?;
-                log::info!("{:?} -- lookup table extend signature: {:?}", boost, sig);
+                let compiled: Vec<&[Instruction]> =
+                    instructions.iter().map(|vec| vec.as_slice()).collect();
+                log::info!("{:?} -- sending extend instructions as bundle", boost);
+                client.send_jito_bundle(compiled.as_slice()).await?;
+                // let compiled: Vec<_> = instructions.clone().into_iter().flatten().collect();
+                // let sig = client.send_transaction(compiled.as_slice()).await?;
+                // log::info!("{:?} -- lookup table extend signature: {:?}", boost, sig);
                 instructions.clear();
             }
-            // log::info!("{:?} -- sending extend instructions", boost);
-            // let sig = client.send_transaction(&[extend_ix]).await?;
-            // log::info!("{:?} -- lookup table extend signature: {:?}", boost, sig);
-            // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
         }
         // submit last jito bundle
         if !instructions.is_empty() {
@@ -99,6 +116,19 @@ pub async fn open_new(
     }
     log::info!("{:?} -- new lookup tables opened", boost);
     Ok(lookup_tables)
+}
+
+async fn deactivate(client: &Client, luts: &[Lut]) -> Result<Signature> {
+    let mut ixs = vec![];
+    for lut in luts {
+        let ix = address_lookup_table::instruction::deactivate_lookup_table(
+            *lut,
+            client.keypair.pubkey(),
+        );
+        ixs.push(ix);
+    }
+    let sig = client.send_transaction(ixs.as_slice()).await?;
+    Ok(sig)
 }
 
 async fn close(client: &Client, luts: &[Lut]) -> Result<Signature> {
@@ -154,10 +184,19 @@ fn read_file(boost: &Pubkey) -> Result<Vec<Lut>> {
         line.pop();
         // decode
         let bytes = line.clone();
-        let arr: [u8; 32] = bytes.try_into().map_err(|_| InvalidPubkeyBytes)?;
-        let pubkey = Pubkey::new_from_array(arr);
-        // add pubkey to list
-        luts.push(pubkey);
+        log::info!("bytes: {:?}", bytes);
+        log::info!("bytes len: {:?}", bytes.len());
+        let pubkey: Result<[u8; 32]> = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!(InvalidPubkeyBytes));
+        if let Ok(ref arr) = pubkey {
+            let pubkey = Pubkey::new_from_array(*arr);
+            // add pubkey to list
+            luts.push(pubkey);
+        };
+        if let Err(err) = pubkey {
+            log::error!("{:?}", err);
+        }
         // clear and read next line
         line.clear();
     }
