@@ -97,8 +97,6 @@ pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
         match reset(client, &boost_pda, &checkpoint_pda, &mut lookup_tables).await {
             Ok(()) => {
                 needs_reset = false;
-                // TODO:
-                return Ok(());
             }
             Err(err) => {
                 log::error!("{:?} -- {:?}", boost_pda, err);

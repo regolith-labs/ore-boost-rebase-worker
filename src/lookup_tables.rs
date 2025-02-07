@@ -27,27 +27,31 @@ pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
             // deactivate
             match deactivate(client, luts).await {
                 Ok(sig) => {
-                    log::info!("chunk deactivate signature: {:?}", sig);
+                    log::info!("{:?} -- chunk deactivate signature: {:?}", boost, sig);
                 }
                 Err(err) => {
-                    log::error!("{:?}", err);
-                    log::error!("chunk failed to deactivate: {:?}", chunk);
+                    log::error!("{:?} -- {:?}", boost, err);
+                    log::error!("{:?} -- chunk failed to deactivate: {:?}", boost, chunk);
                 }
             }
         }
         // then sleep for 5 minutes
         // to allow 500 blocks to pass
+        log::info!(
+            "{:?} -- sleep 5 minutes for deactivations to settle before closing",
+            boost
+        );
         tokio::time::sleep(tokio::time::Duration::from_secs(60 * 5)).await;
         for chunk in luts.chunks(MAX_ACCOUNTS_PER_TX_CLOSE) {
             // deactivate
             // sleep then close
             match close(client, luts).await {
                 Ok(sig) => {
-                    log::info!("chunk closed signature: {:?}", sig);
+                    log::info!("{:?} -- chunk closed signature: {:?}", boost, sig);
                 }
                 Err(err) => {
-                    log::error!("{:?}", err);
-                    log::error!("chunk failed to close: {:?}", chunk);
+                    log::error!("{:?} -- {:?}", boost, err);
+                    log::error!("{:?} -- chunk failed to close: {:?}", boost, chunk);
                 }
             }
         }
@@ -55,13 +59,12 @@ pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
         clear_file(boost)?;
     }
     if let Err(err) = prior {
-        log::error!("{:?}", err);
+        log::error!("{:?} -- {:?}", boost, err);
     }
-    log::info!("resolved prior lookup tables");
+    log::info!("{:?} -- resolved prior lookup tables", boost);
     Ok(())
 }
 
-// TODO: tx too large
 pub async fn open_new(
     client: &Client,
     boost: &Pubkey,
@@ -83,7 +86,7 @@ pub async fn open_new(
         write_file(&[lut_pda], boost)?;
         // then bundle the extend instructions as jito bundles
         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-        let mut instructions: Vec<Vec<Instruction>> = Vec::with_capacity(5);
+        let mut bundles: Vec<Vec<Instruction>> = Vec::with_capacity(5);
         for sub in chunk.chunks(26) {
             let extend_ix = address_lookup_table::instruction::extend_lookup_table(
                 lut_pda,
@@ -91,23 +94,19 @@ pub async fn open_new(
                 Some(signer),
                 sub.to_vec(),
             );
-            instructions.push(vec![extend_ix]);
-            if instructions.len().eq(&5) {
+            bundles.push(vec![extend_ix]);
+            if bundles.len().eq(&5) {
                 let compiled: Vec<&[Instruction]> =
-                    instructions.iter().map(|vec| vec.as_slice()).collect();
+                    bundles.iter().map(|vec| vec.as_slice()).collect();
                 log::info!("{:?} -- sending extend instructions as bundle", boost);
                 client.send_jito_bundle(compiled.as_slice()).await?;
-                // let compiled: Vec<_> = instructions.clone().into_iter().flatten().collect();
-                // let sig = client.send_transaction(compiled.as_slice()).await?;
-                // log::info!("{:?} -- lookup table extend signature: {:?}", boost, sig);
-                instructions.clear();
+                bundles.clear();
             }
         }
         // submit last jito bundle
-        if !instructions.is_empty() {
-            log::info!("{:?} -- found left over extend instructions", boost);
-            let compiled: Vec<&[Instruction]> =
-                instructions.iter().map(|vec| vec.as_slice()).collect();
+        if !bundles.is_empty() {
+            log::info!("{:?} -- found left over extend bundles", boost);
+            let compiled: Vec<&[Instruction]> = bundles.iter().map(|vec| vec.as_slice()).collect();
             log::info!("{:?} -- sending extend instructions as bundle", boost);
             client.send_jito_bundle(compiled.as_slice()).await?;
         }
