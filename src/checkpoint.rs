@@ -210,19 +210,20 @@ async fn rebase_all(
         log::info!("{:?} -- reset signature: {:?}", boost, sig);
     } else {
         // chunk stake accounts into batches
+        let mut bundles: Vec<Vec<Instruction>> = vec![];
         for chunk in stake_accounts.chunks(MAX_ACCOUNTS_PER_TX) {
-            // then jito bundle
-            let mut bundle: Vec<Vec<Instruction>> = Vec::with_capacity(5);
-            for sub in chunk.chunks(5) {
-                let mut ixs = vec![];
-                for stake in sub {
-                    let signer = Arc::clone(&client.keypair);
-                    ixs.push(ore_boost_api::sdk::rebase(signer.pubkey(), *mint, *stake));
-                }
-                bundle.push(ixs);
+            // build transaction
+            let mut transaction = vec![];
+            for account in chunk {
+                let signer = Arc::clone(&client.keypair);
+                transaction.push(ore_boost_api::sdk::rebase(signer.pubkey(), *mint, *account));
             }
+            bundles.push(transaction);
+        }
+        // bundle transactions
+        for tx in bundles.chunks(4) {
+            let bundle: Vec<&[Instruction]> = tx.iter().map(|vec| vec.as_slice()).collect();
             log::info!("{:?} -- submitting rebase", boost);
-            let bundle: Vec<&[Instruction]> = bundle.iter().map(|vec| vec.as_slice()).collect();
             let sig = client
                 .send_jito_bundle_with_luts(bundle.as_slice(), lookup_tables)
                 .await?;
