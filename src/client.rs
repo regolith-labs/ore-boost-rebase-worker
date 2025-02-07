@@ -17,8 +17,8 @@ use solana_sdk::{signature::Keypair, signer::EncodableKey};
 use steel::{sysvar, AccountDeserialize, Clock, Discriminator, Instruction};
 
 use crate::error::Error::{
-    EmptyJitoBundle, InvalidHeliusCluster, MissingHeliusSolanaAsyncClient,
-    TooManyTransactionsInJitoBundle, UnconfirmedJitoBundle,
+    EmptyJitoBundle, EmptyJitoBundleConfirmation, InvalidHeliusCluster,
+    MissingHeliusSolanaAsyncClient, TooManyTransactionsInJitoBundle, UnconfirmedJitoBundle,
 };
 
 pub struct Client {
@@ -38,24 +38,6 @@ impl Client {
         };
         Ok(client)
     }
-    // pub async fn send_transaction(&self, ixs: &[Instruction]) -> Result<Signature> {
-    //     let rpc = self.rpc.get_async_client()?;
-    //     let (hash, _) = rpc
-    //         .get_latest_blockhash_with_commitment(CommitmentConfig::finalized())
-    //         .await?;
-    //     let mut tx = Transaction::new_with_payer(ixs, Some(&self.keypair.pubkey()));
-    //     tx.sign(&[self.keypair.as_ref()], hash);
-    //     let sig = rpc
-    //         .send_transaction_with_config(
-    //             &tx,
-    //             RpcSendTransactionConfig {
-    //                 skip_preflight: true,
-    //                 ..Default::default()
-    //             },
-    //         )
-    //         .await?;
-    //     Ok(sig)
-    // }
     pub async fn send_transaction(&self, ixs: &[Instruction]) -> Result<Signature> {
         let signer = Arc::clone(&self.keypair);
         let signers: Vec<Arc<dyn Signer>> = vec![signer];
@@ -143,7 +125,6 @@ impl Client {
         }
         #[derive(serde::Deserialize, Debug)]
         struct Inner {
-            bundle_id: String,
             status: String,
         }
         #[derive(serde::Deserialize, Debug)]
@@ -155,13 +136,12 @@ impl Client {
             result: Middle,
         }
         let response = serde_json::from_value(response)?;
-        log::info!("jito response: {:?}", response);
         let response: Outer = serde_json::from_value(response)?;
         let first = response
             .result
             .value
             .first()
-            .ok_or(anyhow::anyhow!("missing value"))?;
+            .ok_or(anyhow::anyhow!(EmptyJitoBundleConfirmation))?;
         match first.status.as_str() {
             "Landed" => {
                 log::info!("jito confirmation: {:?}", response);
@@ -169,33 +149,9 @@ impl Client {
             }
             status => {
                 log::info!("bundle status: {}", status);
-                Err(anyhow::anyhow!("not confirmed"))
+                Err(anyhow::anyhow!(UnconfirmedJitoBundle))
             }
         }
-    }
-    async fn request_confirm_jito_bundle(&self, bundle_id: String) -> Result<()> {
-        #[derive(serde::Deserialize, Debug)]
-        struct Inner {
-            bundle_id: String,
-            transactions: Vec<String>,
-        }
-        #[derive(serde::Deserialize, Debug)]
-        struct Middle {
-            value: Vec<Inner>,
-        }
-        #[derive(serde::Deserialize, Debug)]
-        struct Outer {
-            result: Middle,
-        }
-        let jito_api_url = "https://mainnet.block-engine.jito.wtf/api/v1/getBundleStatuses";
-        let response = self
-            .rpc
-            .get_bundle_statuses(vec![bundle_id], jito_api_url)
-            .await?;
-        log::info!("jito response: {:?}", response);
-        let response: Outer = serde_json::from_value(response)?;
-        log::info!("jito confirmation: {:?}", response);
-        Ok(())
     }
     /// returns base58 encoded transaction string
     async fn create_jito_transaction(&self, ixs: &[Instruction]) -> Result<String> {

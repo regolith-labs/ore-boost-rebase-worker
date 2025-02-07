@@ -14,4 +14,6 @@ pub enum Error {
     TooManyTransactionsInJitoBundle,
     #[error("empty jito bundle")]
     EmptyJitoBundle,
+    #[error("empty jito bundle confirmation")]
+    EmptyJitoBundleConfirmation,
 }
