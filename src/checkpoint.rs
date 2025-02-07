@@ -25,40 +25,58 @@ pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
         lookup_tables::open_new(client, &boost_pda, stake_accounts.as_slice()).await?;
     let mut needs_reset = false;
     // start checkpoint loop
-    // 1) check for checkpoint interval
-    // 2) rebase or sleep and break
-    // 3) close lookup tables
-    // 4) create new lookup tables for next checkpoint
+    // 1) fetch checkpoint
+    // 2) check for checkpoint interval
+    // 3) rebase, or sleep and break
+    // 4) close lookup tables
+    // 5) create new lookup tables for next checkpoint
     loop {
         log::info!("///////////////////////////////////////////////////////////");
         log::info!("// checkpoint");
         log::info!("{:?} -- {:?}", boost_pda, checkpoint);
         if needs_reset {
-            match reset(
-                client,
-                &boost_pda,
-                &checkpoint_pda,
-                &mut checkpoint,
-                &mut stake_accounts,
-                &mut lookup_tables,
-            )
-            .await
-            {
+            match reset(client, &boost_pda, &checkpoint_pda, &mut lookup_tables).await {
                 Ok(()) => {
                     needs_reset = false;
                 }
                 Err(err) => {
                     log::error!("{:?} -- {:?}", boost_pda, err);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                    continue;
                 }
             }
         }
+        // fetch checkpoint
+        match client.rpc.get_checkpoint(&checkpoint_pda).await {
+            Ok(cp) => {
+                checkpoint = cp;
+            }
+            Err(err) => {
+                log::error!("{:?} -- {:?}", boost_pda, err);
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                continue;
+            }
+        }
         // check for time
-        if let Err(err) = check_for_time(client, &checkpoint).await {
+        if let Err(err) = check_for_time(client, &checkpoint, &boost_pda).await {
             // time has not elapsed or error
             // sleep then continue loop
             log::info!("{:?} -- {:?}", boost_pda, err);
-            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             continue;
+        }
+        // filter stake accounts
+        // against the checkpoint current-id,
+        // recovering from a partial checkpoint if necessary
+        match get_stake_accounts(client, &boost_pda, &checkpoint).await {
+            Ok(vec) => {
+                stake_accounts = vec;
+            }
+            Err(err) => {
+                log::error!("{:?} -- {:?}", boost_pda, err);
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                continue;
+            }
         }
         // rebase all stake accounts
         if let Err(err) = rebase_all(
@@ -71,36 +89,29 @@ pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
         .await
         {
             log::error!("{:?} -- {:?}", boost_pda, err);
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             continue;
         }
         needs_reset = true;
         // reset
-        match reset(
-            client,
-            &boost_pda,
-            &checkpoint_pda,
-            &mut checkpoint,
-            &mut stake_accounts,
-            &mut lookup_tables,
-        )
-        .await
-        {
+        match reset(client, &boost_pda, &checkpoint_pda, &mut lookup_tables).await {
             Ok(()) => {
                 needs_reset = false;
             }
             Err(err) => {
                 log::error!("{:?} -- {:?}", boost_pda, err);
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             }
         }
     }
 }
 
+/// closes lookup tables from previous checkpoint
+/// and opens new lookup tables for next checkpoint
 async fn reset(
     client: &Client,
     boost_pda: &Pubkey,
     checkpoint_pda: &Pubkey,
-    checkpoint: &mut Checkpoint,
-    stake_accounts: &mut Vec<Pubkey>,
     lookup_tables: &mut Vec<Pubkey>,
 ) -> Result<()> {
     log::info!("{:?} -- resetting for next checkpoint", boost_pda);
@@ -109,8 +120,8 @@ async fn reset(
         log::error!("{:?} -- {:?}", boost_pda, err);
     };
     // fetch updated accounts for next checkpoint
-    *checkpoint = client.rpc.get_checkpoint(checkpoint_pda).await?;
-    *stake_accounts = get_stake_accounts(client, boost_pda, checkpoint).await?;
+    let checkpoint = client.rpc.get_checkpoint(checkpoint_pda).await?;
+    let stake_accounts = get_stake_accounts(client, boost_pda, &checkpoint).await?;
     // create new lookup tables for next checkpoint
     *lookup_tables = lookup_tables::open_new(client, &boost_pda, stake_accounts.as_slice()).await?;
     log::info!("{:?} -- reset for next checkpoint complete", boost_pda);
@@ -120,15 +131,14 @@ async fn reset(
 /// get stake accounts for current checkpoint
 async fn get_stake_accounts(
     client: &Client,
-    boost: &Pubkey,
+    boost_pda: &Pubkey,
     checkpoint: &Checkpoint,
 ) -> Result<Vec<Pubkey>> {
-    log::info!("get stake accounts for current checkpoint");
-    let mut accounts = client.rpc.get_boost_stake_accounts(boost).await?;
-    if accounts.is_empty() {
-        log::info!("no stake accounts found for this boost.");
-        return Ok(vec![]);
-    }
+    log::info!(
+        "{:?} -- get stake accounts for current checkpoint",
+        boost_pda
+    );
+    let mut accounts = client.rpc.get_boost_stake_accounts(boost_pda).await?;
     // sort accounts by stake id
     accounts.sort_by(|(_, stake_a), (_, stake_b)| stake_a.id.cmp(&stake_b.id));
     // filter accounts starting from checkpoint.current_id
@@ -142,24 +152,37 @@ async fn get_stake_accounts(
             }
         })
         .collect();
-    log::info!("checkpoint current id: {:?}", checkpoint.current_id);
-    log::info!("num remaining accounts: {:?}\n", remaining_accounts.len());
+    log::info!(
+        "{:?} -- checkpoint current id: {:?}",
+        boost_pda,
+        checkpoint.current_id
+    );
+    log::info!(
+        "{:?} -- num remaining accounts: {:?}",
+        boost_pda,
+        remaining_accounts.len()
+    );
     Ok(remaining_accounts)
 }
 
 /// check if enough time has passed since last checkpoint
-async fn check_for_time(client: &Client, checkpoint: &Checkpoint) -> Result<()> {
-    log::info!("checking if interval has elapsed");
+async fn check_for_time(
+    client: &Client,
+    checkpoint: &Checkpoint,
+    boost_pda: &Pubkey,
+) -> Result<()> {
+    log::info!("{:?} -- checking if interval has elapsed", boost_pda);
     let clock = client.rpc.get_clock().await?;
     let time_since_last = clock.unix_timestamp - checkpoint.ts;
     if time_since_last < CHECKPOINT_INTERVAL {
         log::info!(
-            "not enough time has passed since last checkpoint. Wait {} more seconds.",
+            "{:?} -- not enough time has passed since last checkpoint. Wait {} more seconds.",
+            boost_pda,
             CHECKPOINT_INTERVAL - time_since_last
         );
         return Err(ClockStillTicking).map_err(From::from);
     }
-    log::info!("interval elapsed\n");
+    log::info!("{:?} -- interval elapsed", boost_pda);
     Ok(())
 }
 

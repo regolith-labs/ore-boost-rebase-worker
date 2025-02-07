@@ -10,6 +10,8 @@ use solana_account_decoder::UiAccountEncoding;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
+use solana_sdk::address_lookup_table::state::AddressLookupTable;
+use solana_sdk::address_lookup_table::AddressLookupTableAccount;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::signer::Signer;
@@ -39,6 +41,17 @@ impl Client {
         Ok(client)
     }
     pub async fn send_transaction(&self, ixs: &[Instruction]) -> Result<Signature> {
+        let signer = Arc::clone(&self.keypair);
+        let signers: Vec<Arc<dyn Signer>> = vec![signer];
+        let tx = SmartTransactionConfig::new(ixs.to_vec(), signers, Timeout::default());
+        let sig = self.rpc.send_smart_transaction(tx).await?;
+        Ok(sig)
+    }
+    pub async fn send_transaction_with_luts(
+        &self,
+        ixs: &[Instruction],
+        _luts: &[Pubkey],
+    ) -> Result<Signature> {
         let signer = Arc::clone(&self.keypair);
         let signers: Vec<Arc<dyn Signer>> = vec![signer];
         let tx = SmartTransactionConfig::new(ixs.to_vec(), signers, Timeout::default());
@@ -186,6 +199,8 @@ pub trait AsyncClient {
     async fn get_boost_stake_accounts(&self, boost: &Pubkey) -> Result<Vec<(Pubkey, Stake)>>;
     async fn get_checkpoint(&self, checkpoint: &Pubkey) -> Result<Checkpoint>;
     async fn get_clock(&self) -> Result<Clock>;
+    async fn get_lookup_table(&self, lut: &Pubkey) -> Result<AddressLookupTableAccount>;
+    async fn get_lookup_tables(&self, luts: &[Pubkey]) -> Result<Vec<AddressLookupTableAccount>>;
 }
 
 #[async_trait]
@@ -233,6 +248,26 @@ impl AsyncClient for helius::Helius {
             .await?;
         let clock = bincode::deserialize::<Clock>(data.as_slice())?;
         Ok(clock)
+    }
+    async fn get_lookup_table(&self, lut: &Pubkey) -> Result<AddressLookupTableAccount> {
+        let rpc = self.get_async_client()?;
+        let data = rpc.get_account_data(lut).await?;
+        let account = AddressLookupTable::deserialize(data.as_slice())?;
+        let account = AddressLookupTableAccount {
+            key: *lut,
+            addresses: account.addresses.to_vec(),
+        };
+        Ok(account)
+    }
+    async fn get_lookup_tables(&self, luts: &[Pubkey]) -> Result<Vec<AddressLookupTableAccount>> {
+        // need address for each account so fetch sequentially
+        // get multiple accounts does not return the respective pubkeys
+        let mut accounts = vec![];
+        for lut in luts {
+            let account = self.get_lookup_table(lut).await?;
+            accounts.push(account);
+        }
+        Ok(accounts)
     }
 }
 
