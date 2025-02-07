@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use ore_boost_api::{consts::CHECKPOINT_INTERVAL, state::Checkpoint};
-use solana_sdk::{pubkey::Pubkey, signer::Signer};
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey, signer::Signer};
 
 use crate::client::{AsyncClient, Client};
 use crate::error::Error::ClockStillTicking;
 use crate::lookup_tables;
 
-const MAX_ACCOUNTS_PER_TX: usize = 10;
+const MAX_ACCOUNTS_PER_TX: usize = 48;
 
 pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
     // derive address
@@ -97,6 +97,8 @@ pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
         match reset(client, &boost_pda, &checkpoint_pda, &mut lookup_tables).await {
             Ok(()) => {
                 needs_reset = false;
+                // TODO:
+                return Ok(());
             }
             Err(err) => {
                 log::error!("{:?} -- {:?}", boost_pda, err);
@@ -191,43 +193,42 @@ async fn rebase_all(
     mint: &Pubkey,
     boost: &Pubkey,
     stake_accounts: &[Pubkey],
-    _lookup_tables: &[Pubkey],
+    lookup_tables: &[Pubkey],
 ) -> Result<()> {
     log::info!("{:?} -- rebasing stake accounts", boost);
     // pack instructions for rebase
-    let mut ixs = vec![];
     if stake_accounts.is_empty() {
         // if total stakers is zero
         // but the checkpoint interval is still passed,
         // use default account to reset checkpoint for new stakers
-        ixs.push(ore_boost_api::sdk::rebase(
-            client.keypair.pubkey(),
-            *mint,
-            Pubkey::default(),
-        ));
+        let ix = ore_boost_api::sdk::rebase(client.keypair.pubkey(), *mint, Pubkey::default());
         log::info!(
             "{:?} -- remaining accounts is empty -- but checkpoint is still elpased. resetting.",
             boost
         );
-        let sig = client.send_transaction(ixs.as_slice()).await?;
+        let sig = client.send_transaction(&[ix]).await?;
         log::info!("{:?} -- reset signature: {:?}", boost, sig);
     } else {
         // chunk stake accounts into batches
-        let chunks = stake_accounts.chunks(MAX_ACCOUNTS_PER_TX);
-        for chunk in chunks {
-            ixs.clear();
-            for stake in chunk {
-                let signer = Arc::clone(&client.keypair);
-                ixs.push(ore_boost_api::sdk::rebase(signer.pubkey(), *mint, *stake));
+        for chunk in stake_accounts.chunks(MAX_ACCOUNTS_PER_TX) {
+            // then jito bundle
+            let mut bundle: Vec<Vec<Instruction>> = Vec::with_capacity(5);
+            for sub in chunk.chunks(5) {
+                let mut ixs = vec![];
+                for stake in sub {
+                    let signer = Arc::clone(&client.keypair);
+                    ixs.push(ore_boost_api::sdk::rebase(signer.pubkey(), *mint, *stake));
+                }
+                bundle.push(ixs);
             }
-            if !ixs.is_empty() {
-                log::info!("{:?} -- submitting chunk", boost);
-                let sig = client.send_transaction(ixs.as_slice()).await?;
-                log::info!("{:?} -- chunk signature: {:?}", boost, sig);
-            } else {
-                log::info!("{:?} -- checkpoint complete", boost);
-            }
+            log::info!("{:?} -- submitting rebase", boost);
+            let bundle: Vec<&[Instruction]> = bundle.iter().map(|vec| vec.as_slice()).collect();
+            let sig = client
+                .send_jito_bundle_with_luts(bundle.as_slice(), lookup_tables)
+                .await?;
+            log::info!("{:?} -- rebase signature: {:?}", boost, sig);
         }
     }
+    log::info!("{:?} -- checkpoint complete", boost);
     Ok(())
 }

@@ -8,7 +8,9 @@ use helius::types::{
 use ore_boost_api::state::{Boost, Checkpoint, Stake};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
+use solana_client::rpc_config::{
+    RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig,
+};
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::address_lookup_table::AddressLookupTableAccount;
@@ -50,13 +52,56 @@ impl Client {
     pub async fn send_transaction_with_luts(
         &self,
         ixs: &[Instruction],
-        _luts: &[Pubkey],
+        luts: &[Pubkey],
     ) -> Result<Signature> {
         let signer = Arc::clone(&self.keypair);
         let signers: Vec<Arc<dyn Signer>> = vec![signer];
-        let tx = SmartTransactionConfig::new(ixs.to_vec(), signers, Timeout::default());
+        let lookup_tables = self.rpc.get_lookup_tables(luts).await?;
+        let tx = CreateSmartTransactionConfig {
+            instructions: ixs.to_vec(),
+            signers,
+            lookup_tables: Some(lookup_tables),
+            fee_payer: None,
+            priority_fee_cap: None,
+        };
+        let tx = SmartTransactionConfig {
+            create_config: tx,
+            send_options: RpcSendTransactionConfig::default(),
+            timeout: Timeout::default(),
+        };
         let sig = self.rpc.send_smart_transaction(tx).await?;
         Ok(sig)
+    }
+    /// returns ok if confirmed
+    pub async fn send_jito_bundle_with_luts(
+        &self,
+        ixs: &[&[Instruction]],
+        luts: &[Pubkey],
+    ) -> Result<()> {
+        let jito_api_url = "https://mainnet.block-engine.jito.wtf/api/v1/bundles";
+        if ixs.len().gt(&5) {
+            return Err(anyhow::anyhow!(TooManyTransactionsInJitoBundle));
+        }
+        if ixs.is_empty() {
+            return Err(anyhow::anyhow!(EmptyJitoBundle));
+        }
+        let mut transactions = vec![];
+        for (index, slice) in ixs.iter().enumerate() {
+            let tx = if index.eq(&(ixs.len() - 1)) {
+                // last of n transactions in bundle, add tip
+                self.create_jito_transaction_with_luts(slice, luts).await?
+            } else {
+                self.create_transaction_with_luts(slice, luts).await?
+            };
+            transactions.push(tx);
+        }
+        let bundle_id = self
+            .rpc
+            .send_jito_bundle(transactions, jito_api_url)
+            .await?;
+        log::info!("bundle id: {:?}", bundle_id);
+        self.confirm_jito_bundle(bundle_id.as_str()).await?;
+        Ok(())
     }
     /// returns ok if confirmed
     pub async fn send_jito_bundle(&self, ixs: &[&[Instruction]]) -> Result<()> {
@@ -189,6 +234,50 @@ impl Client {
         };
         let string = solana_sdk::bs58::encode(bytes).into_string();
         Ok(string)
+    }
+    async fn create_transaction_with_luts(
+        &self,
+        ixs: &[Instruction],
+        luts: &[Pubkey],
+    ) -> Result<String> {
+        let signer = Arc::clone(&self.keypair);
+        let signers: Vec<Arc<dyn Signer>> = vec![signer];
+        let lookup_tables = self.rpc.get_lookup_tables(luts).await?;
+        let config = CreateSmartTransactionConfig {
+            instructions: ixs.to_vec(),
+            signers,
+            lookup_tables: Some(lookup_tables),
+            fee_payer: None,
+            priority_fee_cap: None,
+        };
+        let (tx, _) = self.rpc.create_smart_transaction(&config).await?;
+        let bytes = match tx {
+            SmartTransaction::Legacy(tx) => bincode::serialize(&tx)?,
+            SmartTransaction::Versioned(tx) => bincode::serialize(&tx)?,
+        };
+        let string = solana_sdk::bs58::encode(bytes).into_string();
+        Ok(string)
+    }
+    async fn create_jito_transaction_with_luts(
+        &self,
+        ixs: &[Instruction],
+        luts: &[Pubkey],
+    ) -> Result<String> {
+        let signer = Arc::clone(&self.keypair);
+        let signers: Vec<Arc<dyn Signer>> = vec![signer];
+        let lookup_tables = self.rpc.get_lookup_tables(luts).await?;
+        let config = CreateSmartTransactionConfig {
+            instructions: ixs.to_vec(),
+            signers,
+            lookup_tables: Some(lookup_tables),
+            fee_payer: None,
+            priority_fee_cap: None,
+        };
+        let (tx, _) = self
+            .rpc
+            .create_smart_transaction_with_tip(config, Some(100_000))
+            .await?;
+        Ok(tx)
     }
 }
 
