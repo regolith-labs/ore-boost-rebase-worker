@@ -1,9 +1,11 @@
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
+    sync::Arc,
 };
 
 use anyhow::Result;
+use ore_boost_api::state::Checkpoint;
 use solana_sdk::{
     address_lookup_table, instruction::Instruction, pubkey::Pubkey, signature::Signature,
     signer::Signer,
@@ -15,142 +17,95 @@ use crate::{
 };
 
 const MAX_ACCOUNTS_PER_LUT: usize = 256;
-const MAX_ACCOUNTS_PER_TX_CLOSE: usize = 10;
 
-pub async fn close_prior(client: &Client, boost: &Pubkey) -> Result<()> {
-    log::info!("///////////////////////////////////////////////////////////");
-    log::info!("// resolving previous lookup tables");
-    let prior = read_file(boost);
-    if let Ok(ref luts) = prior {
-        // first, deactivate accounts
-        for chunk in luts.chunks(MAX_ACCOUNTS_PER_TX_CLOSE) {
-            // deactivate
-            match deactivate(client, luts).await {
-                Ok(sig) => {
-                    log::info!("{:?} -- chunk deactivate signature: {:?}", boost, sig);
-                }
-                Err(err) => {
-                    log::error!("{:?} -- {:?}", boost, err);
-                    log::error!("{:?} -- chunk failed to deactivate: {:?}", boost, chunk);
-                }
-            }
-        }
-        // then sleep for 5 minutes
-        // to allow 500 blocks to pass
-        log::info!(
-            "{:?} -- sleep 5 minutes for deactivations to settle before closing",
-            boost
-        );
-        tokio::time::sleep(tokio::time::Duration::from_secs(60 * 5)).await;
-        for chunk in luts.chunks(MAX_ACCOUNTS_PER_TX_CLOSE) {
-            // deactivate
-            // sleep then close
-            match close(client, luts).await {
-                Ok(sig) => {
-                    log::info!("{:?} -- chunk closed signature: {:?}", boost, sig);
-                }
-                Err(err) => {
-                    log::error!("{:?} -- {:?}", boost, err);
-                    log::error!("{:?} -- chunk failed to close: {:?}", boost, chunk);
-                }
-            }
-        }
-        // clear the cache file
-        clear_file(boost)?;
+/// sync lookup tables
+///
+/// add and/or extend lookup tables
+/// for new stake accounts for next checkpoint
+pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
+    log::info!("{} -- syncing lookup tables", boost);
+    // read existing lookup table addresses
+    let existing = read_file(boost)?;
+    // fetch lookup table accounts for the stake addresses they hold
+    let lookup_tables = client.rpc.get_lookup_tables(existing.as_slice()).await?;
+    // fetch all stake accounts
+    let stake_accounts = client.rpc.get_boost_stake_accounts(boost).await?;
+    // filter for stake accounts that don't already have a lookup table
+    let tabled_stake_account_addresses = lookup_tables
+        .iter()
+        .flat_map(|lut| lut.addresses.to_vec())
+        .collect::<Vec<_>>();
+    let untabled_stake_account_addresses = stake_accounts
+        .into_iter()
+        .filter(|(pubkey, _stake)| !tabled_stake_account_addresses.contains(pubkey))
+        .collect::<Vec<_>>();
+    log::info!(
+        "{} -- num tabled addresses: {}",
+        boost,
+        tabled_stake_account_addresses.len()
+    );
+    log::info!(
+        "{} -- num untabled addresses: {}",
+        boost,
+        untabled_stake_account_addresses.len()
+    );
+    // check for a lookup table that still has capacity
+    let capacity = lookup_tables
+        .into_iter()
+        .filter(|lut| lut.addresses.len().lt(&MAX_ACCOUNTS_PER_LUT))
+        .collect::<Vec<_>>()
+        .first();
+    // if capacity, extend with new stake addresses
+    let (extended, rest) = (vec![], vec![]);
+    if let Some(ref capacity) = capacity {
+        extend_lookup_table(client, boost, lookup_table, stake_accounts);
     }
-    if let Err(err) = prior {
-        log::error!("{:?} -- {:?}", boost, err);
-    }
-    log::info!("{:?} -- resolved prior lookup tables", boost);
     Ok(())
 }
 
-pub async fn open_new(
+async fn extend_lookup_table(
     client: &Client,
     boost: &Pubkey,
+    lookup_table: &Pubkey,
     stake_accounts: &[Pubkey],
-) -> Result<Vec<Lut>> {
-    log::info!("{:?} -- opening new lookup tables", boost);
-    let mut lookup_tables = vec![];
-    // create new lookup table for each chunk of stake accounts
-    for chunk in stake_accounts.chunks(MAX_ACCOUNTS_PER_LUT) {
-        let clock = client.rpc.get_clock().await?;
+) -> Result<()> {
+    let mut bundles: Vec<Vec<Instruction>> = Vec::with_capacity(5);
+    for chunk in stake_accounts.chunks(26) {
         let signer = client.keypair.pubkey();
-        // build and submit create instruction first
-        let (create_ix, lut_pda) =
-            address_lookup_table::instruction::create_lookup_table(signer, signer, clock.slot);
-        let sig = client.send_transaction(&[create_ix]).await?;
-        log::info!("{:?} -- new lookup table signature: {:?}", boost, sig);
-        // write lookup table addresses to file
-        // to be closed before next checkpoint
-        write_file(&[lut_pda], boost)?;
-        // then bundle the extend instructions as jito bundles
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-        let mut bundles: Vec<Vec<Instruction>> = Vec::with_capacity(5);
-        for sub in chunk.chunks(26) {
-            let extend_ix = address_lookup_table::instruction::extend_lookup_table(
-                lut_pda,
-                signer,
-                Some(signer),
-                sub.to_vec(),
-            );
-            bundles.push(vec![extend_ix]);
-            if bundles.len().eq(&5) {
-                let compiled: Vec<&[Instruction]> =
-                    bundles.iter().map(|vec| vec.as_slice()).collect();
-                log::info!("{:?} -- sending extend instructions as bundle", boost);
-                client.send_jito_bundle(compiled.as_slice()).await?;
-                bundles.clear();
-            }
-        }
-        // submit last jito bundle
-        if !bundles.is_empty() {
-            log::info!("{:?} -- found left over extend bundles", boost);
+        let extend_ix = address_lookup_table::instruction::extend_lookup_table(
+            *lookup_table,
+            signer,
+            Some(signer),
+            chunk.to_vec(),
+        );
+        bundles.push(vec![extend_ix]);
+        if bundles.len().eq(&5) {
             let compiled: Vec<&[Instruction]> = bundles.iter().map(|vec| vec.as_slice()).collect();
             log::info!("{:?} -- sending extend instructions as bundle", boost);
             client.send_jito_bundle(compiled.as_slice()).await?;
+            bundles.clear();
         }
-        // push to lookup tables
-        lookup_tables.push(lut_pda);
     }
-    log::info!("{:?} -- new lookup tables opened", boost);
-    Ok(lookup_tables)
-}
-
-async fn deactivate(client: &Client, luts: &[Lut]) -> Result<Signature> {
-    let mut ixs = vec![];
-    for lut in luts {
-        let ix = address_lookup_table::instruction::deactivate_lookup_table(
-            *lut,
-            client.keypair.pubkey(),
-        );
-        ixs.push(ix);
+    // submit last jito bundle
+    if !bundles.is_empty() {
+        log::info!("{:?} -- found left over extend bundles", boost);
+        let compiled: Vec<&[Instruction]> = bundles.iter().map(|vec| vec.as_slice()).collect();
+        log::info!("{:?} -- sending extend instructions as bundle", boost);
+        client.send_jito_bundle(compiled.as_slice()).await?;
     }
-    let sig = client.send_transaction(ixs.as_slice()).await?;
-    Ok(sig)
-}
-
-async fn close(client: &Client, luts: &[Lut]) -> Result<Signature> {
-    let mut ixs = vec![];
-    for lut in luts {
-        let ix = address_lookup_table::instruction::close_lookup_table(
-            *lut,
-            client.keypair.pubkey(),
-            client.keypair.pubkey(),
-        );
-        ixs.push(ix);
-    }
-    let sig = client.send_transaction(ixs.as_slice()).await?;
-    Ok(sig)
-}
-
-fn clear_file(boost: &Pubkey) -> Result<()> {
-    log::info!("{:?} -- clearing prior lookup tables", boost);
-    let luts_path = luts_path()?;
-    let path = format!("{}-{}", luts_path, boost);
-    let _file = File::create(path)?; // create by default truncates if already exists
-    log::info!("{:?} -- prior lookup tables cleared", boost);
     Ok(())
+}
+
+async fn create_lookup_table(client: &Client, boost: &Pubkey) -> Result<Pubkey> {
+    log::info!("{:?} -- opening new lookup table", boost);
+    let clock = client.rpc.get_clock().await?;
+    let signer = client.keypair.pubkey();
+    // build and submit create instruction first
+    let (create_ix, lut_pda) =
+        address_lookup_table::instruction::create_lookup_table(signer, signer, clock.slot);
+    let sig = client.send_transaction(&[create_ix]).await?;
+    log::info!("{:?} -- new lookup table signature: {:?}", boost, sig);
+    Ok(lut_pda)
 }
 
 fn write_file(luts: &[Lut], boost: &Pubkey) -> Result<()> {
@@ -186,8 +141,6 @@ fn read_file(boost: &Pubkey) -> Result<Vec<Lut>> {
         line.pop();
         // decode
         let bytes = line.clone();
-        log::info!("bytes: {:?}", bytes);
-        log::info!("bytes len: {:?}", bytes.len());
         let pubkey: Result<[u8; 32]> = bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!(InvalidPubkeyBytes));
