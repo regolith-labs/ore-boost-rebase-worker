@@ -8,7 +8,7 @@ use crate::client::{AsyncClient, Client};
 use crate::error::Error::ClockStillTicking;
 use crate::lookup_tables;
 
-const MAX_ACCOUNTS_PER_TX: usize = 48;
+const MAX_ACCOUNTS_PER_TX: usize = 38;
 
 pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
     // derive address
@@ -17,6 +17,7 @@ pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
     // get accounts
     let _boost = client.rpc.get_boost(&boost_pda).await?;
     let mut checkpoint = client.rpc.get_checkpoint(&checkpoint_pda).await?;
+    let _time = check_for_time(client, &checkpoint, &boost_pda).await;
     // -- cold start --
     // get stake accounts for current checkpoint
     // and create new lookup tables
