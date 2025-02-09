@@ -13,8 +13,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn mint() -> anyhow::Result<solana_sdk::pubkey::Pubkey> {
-    let str = std::env!("MINT");
+    let str = std::env::var("MINT")?;
     use std::str::FromStr;
-    let pubkey = solana_sdk::pubkey::Pubkey::from_str(str)?;
+    let pubkey = solana_sdk::pubkey::Pubkey::from_str(str.as_str())?;
     Ok(pubkey)
 }

@@ -146,7 +146,8 @@ async fn close(client: &Client, luts: &[Lut]) -> Result<Signature> {
 
 fn clear_file(boost: &Pubkey) -> Result<()> {
     log::info!("{:?} -- clearing prior lookup tables", boost);
-    let path = format!("{}-{}", LUTS_PATH, boost);
+    let luts_path = luts_path()?;
+    let path = format!("{}-{}", luts_path, boost);
     let _file = File::create(path)?; // create by default truncates if already exists
     log::info!("{:?} -- prior lookup tables cleared", boost);
     Ok(())
@@ -154,7 +155,8 @@ fn clear_file(boost: &Pubkey) -> Result<()> {
 
 fn write_file(luts: &[Lut], boost: &Pubkey) -> Result<()> {
     log::info!("{:?} -- writing new lookup tables", boost);
-    let path = format!("{}-{}", LUTS_PATH, boost);
+    let luts_path = luts_path()?;
+    let path = format!("{}-{}", luts_path, boost);
     log::info!("path: {}", path);
     let mut file = OpenOptions::new()
         .create(true) // open or create
@@ -171,7 +173,8 @@ fn write_file(luts: &[Lut], boost: &Pubkey) -> Result<()> {
 type Lut = Pubkey;
 fn read_file(boost: &Pubkey) -> Result<Vec<Lut>> {
     log::info!("{:?} -- reading prior lookup tables", boost);
-    let path = format!("{}-{}", LUTS_PATH, boost);
+    let luts_path = luts_path()?;
+    let path = format!("{}-{}", luts_path, boost);
     let file = File::open(path)?;
     log::info!("{:?} -- found prior lookup tables file", boost);
     let mut luts = vec![];
@@ -203,4 +206,7 @@ fn read_file(boost: &Pubkey) -> Result<Vec<Lut>> {
     Ok(luts)
 }
 
-const LUTS_PATH: &str = std::env!("LUTS_PATH");
+fn luts_path() -> Result<String> {
+    let path = std::env::var("LUTS_PATH")?;
+    Ok(path)
+}

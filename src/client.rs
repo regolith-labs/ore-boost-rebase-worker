@@ -32,7 +32,7 @@ pub struct Client {
 
 impl Client {
     pub fn new() -> Result<Self> {
-        let helius_api_key = helius_api_key();
+        let helius_api_key = helius_api_key()?;
         let helius_cluster = helius_cluster()?;
         let keypair = keypair()?;
         let rpc = helius::Helius::new_with_async_solana(helius_api_key.as_str(), helius_cluster)?;
@@ -49,6 +49,7 @@ impl Client {
         let sig = self.rpc.send_smart_transaction(tx).await?;
         Ok(sig)
     }
+    #[allow(dead_code)]
     pub async fn send_transaction_with_luts(
         &self,
         ixs: &[Instruction],
@@ -397,13 +398,14 @@ where
     Ok(accounts)
 }
 
-fn helius_api_key() -> String {
-    std::env!("HELIUS_API_KEY").to_string()
+fn helius_api_key() -> Result<String> {
+    let key = std::env::var("HELIUS_API_KEY")?;
+    Ok(key)
 }
 
 fn helius_cluster() -> Result<Cluster> {
-    let cluster_str = std::env!("HELIUS_CLUSTER");
-    let res = match cluster_str {
+    let cluster_str = std::env::var("HELIUS_CLUSTER")?;
+    let res = match cluster_str.as_str() {
         "mainnet" => Ok(Cluster::MainnetBeta),
         "mainnet-staked" => Ok(Cluster::StakedMainnetBeta),
         "devnet" => Ok(Cluster::Devnet),
@@ -413,7 +415,7 @@ fn helius_cluster() -> Result<Cluster> {
 }
 
 fn keypair() -> Result<Keypair> {
-    let keypair_path = std::env!("KEYPAIR_PATH");
+    let keypair_path = std::env::var("KEYPAIR_PATH")?;
     let keypair =
         Keypair::read_from_file(keypair_path).map_err(|err| anyhow::anyhow!(err.to_string()))?;
     Ok(keypair)
