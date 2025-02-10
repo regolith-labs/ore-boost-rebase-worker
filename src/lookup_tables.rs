@@ -164,7 +164,23 @@ fn read_file(boost: &Pubkey) -> Result<Vec<Lut>> {
     log::info!("{:?} -- reading prior lookup tables", boost);
     let luts_path = luts_path()?;
     let path = format!("{}-{}", luts_path, boost);
-    let file = File::open(path)?;
+    let file = match File::open(path.as_str()) {
+        Ok(f) => f,
+        Err(err) => match err.kind() {
+            std::io::ErrorKind::NotFound => {
+                log::info!(
+                    "{} -- no prior lookup tables found, creating new cache file",
+                    boost
+                );
+                let _file = File::create(path)?;
+                log::info!("{} -- new cache file created", boost);
+                return Ok(vec![]);
+            }
+            _ => {
+                return Err(anyhow::anyhow!(err));
+            }
+        },
+    };
     log::info!("{:?} -- found prior lookup tables file", boost);
     let mut luts = vec![];
     let mut line = vec![];
