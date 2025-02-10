@@ -21,6 +21,7 @@ pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
     log::info!("{} -- syncing lookup tables", boost);
     // read existing lookup table addresses
     let existing = read_file(boost)?;
+    log::info!("{} -- existing lookup tables: {:?}", boost, existing);
     // fetch lookup table accounts for the stake addresses they hold
     let lookup_tables = client.rpc.get_lookup_tables(existing.as_slice()).await?;
     // fetch all stake accounts
@@ -49,6 +50,9 @@ pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
         boost,
         untabled_stake_account_addresses.len()
     );
+    if untabled_stake_account_addresses.is_empty() {
+        return Ok(());
+    }
     // check for a lookup table that still has capacity
     let capacity = lookup_tables
         .into_iter()
@@ -62,8 +66,13 @@ pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
             // extend the lookup table that has capacity
             let space_remaining = MAX_ACCOUNTS_PER_LUT - capacity.addresses.len();
             let (extending, needs_allocation) =
-                untabled_stake_account_addresses.split_at(space_remaining);
-            extend_lookup_table(client, boost, &capacity.key, extending).await?;
+                if space_remaining > untabled_stake_account_addresses.len() {
+                    (untabled_stake_account_addresses, vec![])
+                } else {
+                    let (ext, na) = untabled_stake_account_addresses.split_at(space_remaining);
+                    (ext.to_vec(), na.to_vec())
+                };
+            extend_lookup_table(client, boost, &capacity.key, extending.as_slice()).await?;
             // set aside the rest of the stake accounts for allocation in a new lookup table
             needs_allocation.to_vec()
         }
@@ -74,6 +83,7 @@ pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
         for chunk in rest.chunks(MAX_ACCOUNTS_PER_LUT) {
             // allocate new lookup table
             let lut_pda = create_lookup_table(client, boost).await?;
+            write_file(&[lut_pda], boost)?;
             log::info!(
                 "{} -- sleeping to allow lookup table creation to settle",
                 boost
