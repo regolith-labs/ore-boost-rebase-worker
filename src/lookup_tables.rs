@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
+use ore_boost_api::state::Stake;
 use solana_sdk::{address_lookup_table, instruction::Instruction, pubkey::Pubkey, signer::Signer};
 
 use crate::{
@@ -13,11 +14,13 @@ use crate::{
 
 const MAX_ACCOUNTS_PER_LUT: usize = 256;
 
+type LookupTables = Vec<Pubkey>;
+type StakeAccounts = Vec<(Pubkey, Stake)>;
 /// sync lookup tables
 ///
 /// add and/or extend lookup tables
 /// for new stake accounts for next checkpoint
-pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
+pub async fn sync(client: &Client, boost: &Pubkey) -> Result<(LookupTables, StakeAccounts)> {
     log::info!("{} -- syncing lookup tables", boost);
     // read existing lookup table addresses
     let existing = read_file(boost)?;
@@ -51,7 +54,7 @@ pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
         untabled_stake_account_addresses.len()
     );
     if untabled_stake_account_addresses.is_empty() {
-        return Ok(());
+        return Ok((vec![], stake_accounts));
     }
     // check for a lookup table that still has capacity
     let capacity = lookup_tables
@@ -93,7 +96,9 @@ pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
             extend_lookup_table(client, boost, &lut_pda, chunk).await?;
         }
     }
-    Ok(())
+    // read latest lookup tables
+    let lookup_tables = read_file(boost)?;
+    Ok((lookup_tables, stake_accounts))
 }
 
 async fn extend_lookup_table(

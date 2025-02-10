@@ -73,12 +73,12 @@ impl Client {
         let sig = self.rpc.send_smart_transaction(tx).await?;
         Ok(sig)
     }
-    /// returns ok if confirmed
+    /// returns bundle-id if confirmed
     pub async fn send_jito_bundle_with_luts(
         &self,
         ixs: &[&[Instruction]],
         luts: &[Pubkey],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let jito_api_url = "https://mainnet.block-engine.jito.wtf/api/v1/bundles";
         if ixs.len().gt(&5) {
             return Err(anyhow::anyhow!(TooManyTransactionsInJitoBundle));
@@ -102,7 +102,7 @@ impl Client {
             .await?;
         log::info!("bundle id: {:?}", bundle_id);
         self.confirm_jito_bundle(bundle_id.as_str()).await?;
-        Ok(())
+        Ok(bundle_id)
     }
     /// returns ok if confirmed
     pub async fn send_jito_bundle(&self, ixs: &[&[Instruction]]) -> Result<()> {
