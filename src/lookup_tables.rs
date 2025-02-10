@@ -54,7 +54,7 @@ pub async fn sync(client: &Client, boost: &Pubkey) -> Result<(LookupTables, Stak
         untabled_stake_account_addresses.len()
     );
     if untabled_stake_account_addresses.is_empty() {
-        return Ok((vec![], stake_accounts));
+        return Ok((existing, stake_accounts));
     }
     // check for a lookup table that still has capacity
     let capacity = lookup_tables
