@@ -1,15 +1,10 @@
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
-    sync::Arc,
 };
 
 use anyhow::Result;
-use ore_boost_api::state::Checkpoint;
-use solana_sdk::{
-    address_lookup_table, instruction::Instruction, pubkey::Pubkey, signature::Signature,
-    signer::Signer,
-};
+use solana_sdk::{address_lookup_table, instruction::Instruction, pubkey::Pubkey, signer::Signer};
 
 use crate::{
     client::{AsyncClient, Client},
@@ -36,8 +31,13 @@ pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
         .flat_map(|lut| lut.addresses.to_vec())
         .collect::<Vec<_>>();
     let untabled_stake_account_addresses = stake_accounts
-        .into_iter()
-        .filter(|(pubkey, _stake)| !tabled_stake_account_addresses.contains(pubkey))
+        .iter()
+        .filter_map(
+            |(pubkey, _stake)| match tabled_stake_account_addresses.contains(pubkey) {
+                true => None,
+                false => Some(*pubkey),
+            },
+        )
         .collect::<Vec<_>>();
     log::info!(
         "{} -- num tabled addresses: {}",
@@ -53,12 +53,35 @@ pub async fn sync(client: &Client, boost: &Pubkey) -> Result<()> {
     let capacity = lookup_tables
         .into_iter()
         .filter(|lut| lut.addresses.len().lt(&MAX_ACCOUNTS_PER_LUT))
-        .collect::<Vec<_>>()
-        .first();
+        .collect::<Vec<_>>();
+    let capacity = capacity.first();
     // if capacity, extend with new stake addresses
-    let (extended, rest) = (vec![], vec![]);
-    if let Some(ref capacity) = capacity {
-        extend_lookup_table(client, boost, lookup_table, stake_accounts);
+    let rest = match capacity {
+        Some(capacity) => {
+            log::info!("{} -- found lookup table with capacity", boost);
+            // extend the lookup table that has capacity
+            let space_remaining = MAX_ACCOUNTS_PER_LUT - capacity.addresses.len();
+            let (extending, needs_allocation) =
+                untabled_stake_account_addresses.split_at(space_remaining);
+            extend_lookup_table(client, boost, &capacity.key, extending).await?;
+            // set aside the rest of the stake accounts for allocation in a new lookup table
+            needs_allocation.to_vec()
+        }
+        None => untabled_stake_account_addresses,
+    };
+    // if remaining stake addresses, allocate new lookup table(s)
+    if !rest.is_empty() {
+        for chunk in rest.chunks(MAX_ACCOUNTS_PER_LUT) {
+            // allocate new lookup table
+            let lut_pda = create_lookup_table(client, boost).await?;
+            log::info!(
+                "{} -- sleeping to allow lookup table creation to settle",
+                boost
+            );
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            // extend this new lookup table
+            extend_lookup_table(client, boost, &lut_pda, chunk).await?;
+        }
     }
     Ok(())
 }
@@ -69,6 +92,7 @@ async fn extend_lookup_table(
     lookup_table: &Pubkey,
     stake_accounts: &[Pubkey],
 ) -> Result<()> {
+    log::info!("{:?} -- extending lookup table", boost);
     let mut bundles: Vec<Vec<Instruction>> = Vec::with_capacity(5);
     for chunk in stake_accounts.chunks(26) {
         let signer = client.keypair.pubkey();

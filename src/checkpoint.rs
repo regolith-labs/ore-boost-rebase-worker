@@ -109,23 +109,23 @@ pub async fn run(client: &Client, mint: &Pubkey) -> Result<()> {
     // }
 }
 
-// opens and/or extends lookup tables
-// for new stake accounts in next checkpoint
-async fn reset(
-    client: &Client,
-    boost_pda: &Pubkey,
-    checkpoint_pda: &Pubkey,
-    lookup_tables: &mut Vec<Pubkey>,
-) -> Result<()> {
-    log::info!("{:?} -- resetting for next checkpoint", boost_pda);
-    // fetch updated accounts for next checkpoint
-    let checkpoint = client.rpc.get_checkpoint(checkpoint_pda).await?;
-    let stake_accounts = get_stake_accounts(client, boost_pda, &checkpoint).await?;
-    // create new lookup tables for next checkpoint
-    *lookup_tables = lookup_tables::open_new(client, &boost_pda, stake_accounts.as_slice()).await?;
-    log::info!("{:?} -- reset for next checkpoint complete", boost_pda);
-    Ok(())
-}
+// // opens and/or extends lookup tables
+// // for new stake accounts in next checkpoint
+// async fn reset(
+//     client: &Client,
+//     boost_pda: &Pubkey,
+//     checkpoint_pda: &Pubkey,
+//     lookup_tables: &mut Vec<Pubkey>,
+// ) -> Result<()> {
+//     log::info!("{:?} -- resetting for next checkpoint", boost_pda);
+//     // fetch updated accounts for next checkpoint
+//     let checkpoint = client.rpc.get_checkpoint(checkpoint_pda).await?;
+//     let stake_accounts = get_stake_accounts(client, boost_pda, &checkpoint).await?;
+//     // create new lookup tables for next checkpoint
+//     *lookup_tables = lookup_tables::open_new(client, &boost_pda, stake_accounts.as_slice()).await?;
+//     log::info!("{:?} -- reset for next checkpoint complete", boost_pda);
+//     Ok(())
+// }
 
 /// get stake accounts for current checkpoint
 async fn get_stake_accounts(
